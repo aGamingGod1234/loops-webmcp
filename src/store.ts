@@ -1,4 +1,4 @@
-import { daysUntil, isDueToday, isOverdue, parseUntil, relativeDue } from "./dates";
+import { daysUntil, isDueToday, isOverdue, parseUntil, relativeDue } from "./dates.ts";
 import type {
   CompactLoop,
   Counts,
@@ -8,7 +8,7 @@ import type {
   LoopStatus,
   Person,
 } from "./types";
-import { STATUSES } from "./types";
+import { STATUSES } from "./types.ts";
 
 const KEY = "loops.v2";
 
@@ -29,8 +29,10 @@ function load(): Loop[] {
   }
 }
 
-function persist() {
-  localStorage.setItem(KEY, JSON.stringify(loops));
+function persist(next = loops) {
+  // Commit only after storage succeeds so failed tool calls can be retried safely.
+  localStorage.setItem(KEY, JSON.stringify(next));
+  loops = next;
   for (const fn of listeners) fn();
 }
 
@@ -75,8 +77,7 @@ function patch(id: string, fn: (loop: Loop) => Loop): Loop {
     draft: current.draft ? { ...current.draft } : null,
     updatedAt: nowIso(),
   });
-  loops = loops.map((l) => (l.id === id ? next : l));
-  persist();
+  persist(loops.map((l) => (l.id === id ? next : l)));
   return next;
 }
 
@@ -200,8 +201,7 @@ export function addLoop(input: {
     updatedAt: createdAt,
     events: [{ ts: createdAt, actor: "you", text: "Opened." }],
   };
-  loops = [loop, ...loops];
-  persist();
+  persist([loop, ...loops]);
   return structuredClone(loop);
 }
 
@@ -371,10 +371,7 @@ export function planToday(): {
 
 function normalizeDue(due?: string | null): string | null {
   if (due === undefined || due === null || due === "") return null;
-  if (/^\d+[dwm]$/i.test(due.trim())) return parseUntil(due).toISOString();
-  const d = new Date(due);
-  if (Number.isNaN(d.getTime())) throw new Error(`Invalid due date: ${due}`);
-  return d.toISOString();
+  return parseUntil(due).toISOString();
 }
 
 function normalizePeople(people?: Array<string | Person>): Person[] {

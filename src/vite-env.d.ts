@@ -10,6 +10,7 @@ export interface WebMcpTool {
     readOnlyHint?: boolean;
     destructiveHint?: boolean;
     openWorldHint?: boolean;
+    consequentialHint?: boolean;
   };
   execute: (args: Record<string, unknown>) => unknown | Promise<unknown>;
 }
@@ -18,7 +19,8 @@ export interface ModelContext {
   registerTool: (
     tool: WebMcpTool,
     options?: { signal?: AbortSignal },
-  ) => void;
+  ) => void | Promise<void>;
+  unregisterTool?: (name: string) => void;
 }
 
 declare global {

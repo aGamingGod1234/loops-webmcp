@@ -9,8 +9,8 @@ import {
   searchLoops,
   snoozeLoop,
   updateLoop,
-} from "./store";
-import { STATUSES } from "./types";
+} from "./store.ts";
+import { STATUSES } from "./types.ts";
 import type { Filter, LoopStatus } from "./types";
 import type { ModelContext, WebMcpTool } from "./vite-env";
 
@@ -164,7 +164,7 @@ const tools: WebMcpTool[] = [
   {
     name: "draft_message",
     description:
-      "Write a pending draft on a loop. Does NOT send. Status becomes draft if it was not already done. A human must approve in the UI or call approve_draft.",
+      "Write a pending draft on an open loop. Does NOT send. Status becomes draft. Closed loops must be reopened first. Approval is a separate UI action or approve_draft call.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -178,8 +178,9 @@ const tools: WebMcpTool[] = [
   },
   {
     name: "approve_draft",
+    annotations: { consequentialHint: true },
     description:
-      "CONSEQUENTIAL. Marks the pending draft as sent: appends a sent event, clears the draft, then closes the loop (one-shot) or sets it to waiting if a reply is expected. This is the only send. Equivalent to the human Approve button. Do not call unless the human asked to send, or the draft is clearly ready and they delegated approval.",
+      "CONSEQUENTIAL. Records approval locally: appends a sent event, clears the draft, then closes the loop (one-shot) or sets it to waiting if a reply is expected. No email is delivered. Equivalent to the human Approve button. Only call with the human's explicit approval or delegated authority.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -250,18 +251,44 @@ const tools: WebMcpTool[] = [
 ];
 
 export function getModelContext(): ModelContext | null {
-  const ctx = document.modelContext ?? navigator.modelContext;
-  if (typeof ctx?.registerTool === "function") return ctx;
-  return null;
+  return [document.modelContext, navigator.modelContext].find(
+    (ctx) => typeof ctx?.registerTool === "function",
+  ) ?? null;
 }
 
-export function registerTools(signal: AbortSignal): string[] {
+export async function registerTools(signal: AbortSignal): Promise<string[]> {
   const ctx = getModelContext();
-  if (!ctx) return [];
+  if (!ctx || signal.aborted) return [];
   const names: string[] = [];
-  for (const tool of tools) {
-    ctx.registerTool(tool, { signal });
-    names.push(tool.name);
+  const legacyNames: string[] = [];
+  const pending: Promise<void>[] = [];
+  const registration = new AbortController();
+  let active = true;
+  const cleanup = () => {
+    if (!active) return;
+    active = false;
+    registration.abort();
+    // Older navigator implementations ignore the registration signal.
+    for (const name of legacyNames) {
+      try { ctx.unregisterTool?.(name); } catch { /* Already removed by the signal. */ }
+    }
+    signal.removeEventListener("abort", cleanup);
+  };
+  signal.addEventListener("abort", cleanup, { once: true });
+  try {
+    for (const tool of tools) {
+      const result = ctx.registerTool(tool, { signal: registration.signal });
+      if (result) pending.push(result);
+      else legacyNames.push(tool.name);
+      names.push(tool.name);
+    }
+    await Promise.all(pending);
+  } catch (error) {
+    cleanup();
+    // A host may mix promise-based registrations with synchronous failures.
+    await Promise.allSettled(pending);
+    if (!signal.aborted) console.warn("WebMCP tools could not be registered.", error);
+    return [];
   }
-  return names;
+  return signal.aborted ? [] : names;
 }

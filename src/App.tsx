@@ -15,12 +15,13 @@ import {
   draftMessage,
   filterLoops,
   getSnapshot,
+  isTodayLoop,
   snoozeLoop,
   subscribe,
 } from "./store";
 import { FILTERS } from "./types";
 import type { Filter, Loop, LoopStatus } from "./types";
-import { registerTools, TOOL_NAMES, getModelContext } from "./webmcp";
+import { registerTools } from "./webmcp";
 
 const EMPTY_INBOX = {
   title: "Nothing here yet.",
@@ -42,7 +43,7 @@ const EMPTY: Record<Filter, { title: string; body: string }> = {
   },
   draft: {
     title: "No drafts waiting for a human.",
-    body: "The agent can write. It cannot send. Anything it files will wait here for you.",
+    body: "The agent can file a draft. Approval is a separate action in the UI or an authorized agent call.",
   },
   done: {
     title: "Closed loops live here.",
@@ -67,20 +68,19 @@ export function App() {
 
   const counts = useMemo(() => countsOf(loops), [loops]);
   const visible = useMemo(() => filterLoops(loops, filter, query), [loops, filter, query]);
-  const selected = loops.find((l) => l.id === selectedId) ?? visible[0] ?? null;
+  const selected = visible.find((l) => l.id === selectedId) ?? visible[0] ?? null;
 
   useEffect(() => {
-    if (!selectedId && visible[0]) setSelectedId(visible[0].id);
-    if (selectedId && !loops.some((l) => l.id === selectedId) && visible[0]) {
-      setSelectedId(visible[0].id);
-    }
-  }, [selectedId, visible, loops]);
+    setSelectedId(selected?.id ?? null);
+  }, [selected?.id]);
 
   useEffect(() => {
     const ac = new AbortController();
-    const names = registerTools(ac.signal);
-    setTools(names);
-    setConnected(names.length > 0 || !!getModelContext());
+    void registerTools(ac.signal).then((names) => {
+      if (ac.signal.aborted) return;
+      setTools(names);
+      setConnected(names.length > 0);
+    });
     return () => ac.abort();
   }, []);
 
@@ -111,7 +111,7 @@ export function App() {
         else (e.target as HTMLElement)?.blur?.();
         return;
       }
-      if (typing) return;
+      if (typing || composing || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key === "j") move(1);
       if (e.key === "k") move(-1);
       if (e.key === "/" ) {
@@ -120,14 +120,14 @@ export function App() {
       }
       if (e.key === "n") setComposing(true);
       if (e.key === "Enter" && selected) setShowDetail(true);
-      if (e.key === "a" && selected?.draft) approveDraft(selected.id);
+      if (e.key === "a" && selected?.draft && !editing) approveDraft(selected.id);
       if (e.key === "e" && selected?.draft) setEditing(true);
       if (e.key === "s" && selected && selected.status !== "done") setSnoozeOpen((v) => !v);
       if (e.key === "c" && selected && selected.status !== "done") closeLoop(selected.id);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, selected, composing, showDetail]);
+  }, [move, selected, composing, showDetail, editing]);
 
   const filterLabel = FILTERS.find((f) => f.id === filter)?.label ?? "Today";
 
@@ -175,8 +175,8 @@ export function App() {
               {connected ? (
                 <>
                   <strong>Agent connected</strong>
-                  <div> · {tools.length || TOOL_NAMES.length} tools</div>
-                  <div className="tool-tip">{(tools.length ? tools : [...TOOL_NAMES]).join("\n")}</div>
+                  <div> · {tools.length} tools</div>
+                  <div className="tool-tip">{tools.join("\n")}</div>
                 </>
               ) : (
                 <>
@@ -291,7 +291,8 @@ export function App() {
           onCreate={(input) => {
             const loop = addLoop(input);
             setSelectedId(loop.id);
-            setFilter(loop.status === "done" ? "done" : "today");
+            setFilter(isTodayLoop(loop) ? "today" : loop.status);
+            setQuery("");
             setComposing(false);
             setShowDetail(true);
           }}
@@ -411,10 +412,10 @@ function Detail({
             />
             <div className="bar">
               <span style={{ fontSize: 12, color: "var(--faint)" }}>
-                {editing ? "Editing — save before you approve." : "Approve sends. The agent cannot."}
+                {editing ? "Editing — save before you approve." : "Approve records completion. No email is sent."}
               </span>
               {editing ? (
-                <button className="btn" onClick={onSaveDraft}>
+                <button className="btn" disabled={!draftText.trim()} onClick={onSaveDraft}>
                   Save draft
                 </button>
               ) : null}
@@ -424,6 +425,7 @@ function Detail({
 
         {!loop.draft && loop.status !== "done" && (
           <DraftBox
+            key={loop.id}
             onSubmit={(body) => {
               draftMessage(loop.id, body, "human");
             }}
@@ -444,7 +446,7 @@ function Detail({
       {loop.status !== "done" && (
         <div className="actions">
           {loop.draft && (
-            <button className="btn primary" onClick={onApprove}>
+            <button className="btn primary" disabled={editing} onClick={onApprove}>
               Approve
             </button>
           )}

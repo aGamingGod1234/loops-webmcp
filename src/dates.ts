@@ -26,7 +26,16 @@ export function parseUntil(until: string): Date {
     d.setHours(9, 0, 0, 0);
     return d;
   }
-  const parsed = new Date(raw);
+  // Date inputs describe a local calendar day, not midnight UTC.
+  const dateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const parsed = new Date(dateOnly ? `${raw}T09:00:00` : raw);
+  if (dateOnly && (
+    parsed.getFullYear() !== Number(dateOnly[1]) ||
+    parsed.getMonth() + 1 !== Number(dateOnly[2]) ||
+    parsed.getDate() !== Number(dateOnly[3])
+  )) {
+    throw new Error(`Invalid date: ${until}`);
+  }
   if (Number.isNaN(parsed.getTime())) {
     throw new Error(`Invalid date: ${until}. Use ISO or relative like 3d, 1w.`);
   }
